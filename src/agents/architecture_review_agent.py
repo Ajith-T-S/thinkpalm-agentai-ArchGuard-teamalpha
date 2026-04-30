@@ -76,6 +76,16 @@ class ArchitectureReviewAgent:
             cleaned.append(item)
         return cleaned
 
+    def _merge_risks(self, llm_risks: list[str], heuristic_risks: list[str], limit: int = 12) -> list[str]:
+        merged: list[str] = []
+        for item in llm_risks + heuristic_risks:
+            normalized = item.strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+            if len(merged) >= limit:
+                break
+        return merged
+
     def run(self, analysis: RepoAnalysisResult) -> ArchitectureReviewResult:
         prompt = f"""
 You are Architecture Review Agent.
@@ -110,7 +120,12 @@ Be concise and actionable.
             data = self._extract_json_object(text)
             if data is None:
                 raise ValueError("No valid JSON object found in model output.")
-            return ArchitectureReviewResult(**data)
+            review = ArchitectureReviewResult(**data)
+            review.risks_and_antipatterns = self._merge_risks(
+                review.risks_and_antipatterns,
+                analysis.risks,
+            )
+            return review
         except Exception:
             lines = self._clean_lines(text)
             return ArchitectureReviewResult(

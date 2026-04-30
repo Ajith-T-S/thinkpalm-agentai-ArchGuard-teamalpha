@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -51,6 +52,42 @@ def compute_confidence(analysis: dict, report: dict) -> int:
     if len(report.get("architecture_observations", [])) < 3:
         score -= 5
     return max(0, min(99, score))
+
+
+def markdown_to_pdf_bytes(markdown_text: str, title: str) -> bytes | None:
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    except ImportError:
+        return None
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    body_style = styles["BodyText"]
+    heading_style = styles["Heading3"]
+    body_style.spaceAfter = 6
+
+    content = [Paragraph(title, title_style), Spacer(1, 10)]
+
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            content.append(Spacer(1, 6))
+            continue
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip()
+            content.append(Paragraph(heading, heading_style))
+            continue
+        if line.startswith("- "):
+            line = f"• {line[2:].strip()}"
+        line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        content.append(Paragraph(line, body_style))
+
+    doc.build(content)
+    return buffer.getvalue()
 
 
 st.set_page_config(page_title="AI Architecture Review Assistant", layout="wide")
@@ -288,18 +325,6 @@ if result:
         risks = report.get("risks_and_antipatterns", [])
         render_bullets("Risk Findings", risks, "No significant risks detected.")
 
-        evidence_snippets = analysis.get("evidence", {}).get("evidence_snippets", [])
-        if observations or risks:
-            st.markdown("**Per-finding supporting evidence**")
-            findings_for_evidence = (observations + risks)[:8]
-            for finding in findings_for_evidence:
-                with st.expander(finding):
-                    if evidence_snippets:
-                        for item in evidence_snippets[:4]:
-                            st.markdown(f"- `{item.get('path', 'unknown')}`")
-                            st.code(item.get("snippet", "No snippet available."))
-                    else:
-                        st.caption("No evidence snippets available for this run.")
     with tabs[3]:
         st.subheader("Recommendations")
         render_bullets("Recommended Actions", report.get("recommendations", []), "No recommendations available.")
@@ -472,6 +497,18 @@ if result:
             file_name=f"{report['repo_full_name'].replace('/', '_')}_analysis_result.json",
             mime="application/json",
         )
+        pdf_bytes = markdown_to_pdf_bytes(
+            report["markdown_report"], f"Architecture Report: {report['repo_full_name']}"
+        )
+        if pdf_bytes:
+            st.download_button(
+                label="Download PDF report",
+                data=pdf_bytes,
+                file_name=f"{report['repo_full_name'].replace('/', '_')}_architecture_report.pdf",
+                mime="application/pdf",
+            )
+        else:
+            st.caption("Install `reportlab` to enable PDF export.")
 
         with st.expander("Preview full markdown report"):
             st.markdown(report["markdown_report"])

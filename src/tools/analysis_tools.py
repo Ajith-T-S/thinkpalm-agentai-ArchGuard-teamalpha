@@ -198,6 +198,14 @@ def detect_risks(
     risks = []
     lower_paths = [p.lower() for p in paths]
     has_tests = any(p.startswith("tests/") or "/tests/" in p for p in lower_paths)
+    python_deps = [dep for dep in dependencies if dep.ecosystem == "python"]
+    has_env_files = any(Path(p).name.lower() in {".env", ".env.example"} for p in paths)
+    has_python_sources = any(Path(p).suffix.lower() == ".py" for p in paths)
+    has_api_integration = any("github" in p or "openai" in p for p in lower_paths) or any(
+        dep.ecosystem in {"python", "node"}
+        and any("openai" in item.lower() or "github" in item.lower() for item in dep.dependencies)
+        for dep in dependencies
+    )
 
     if not has_tests:
         risks.append("Test directory is missing or sparse; regression risk may be high.")
@@ -205,8 +213,46 @@ def detect_risks(
         risks.append("No CI workflow detected; code quality checks may be inconsistent.")
     if not any("dockerfile" in p for p in lower_paths):
         risks.append("No Dockerfile found; environment parity across machines may be weaker.")
+    if has_python_sources and python_deps:
+        has_unpinned_python_ranges = any(
+            ">=" in item or "~=" in item or ">" in item
+            for dep in python_deps
+            for item in dep.dependencies
+        )
+        if has_unpinned_python_ranges:
+            risks.append(
+                "No strict Python dependency lock detected; requirements ranges can cause cross-environment version drift."
+            )
+    if has_env_files and not any(
+        marker in p
+        for p in lower_paths
+        for marker in ("secrets", "vault", "sops", "doppler", "keyvault", "secret_manager")
+    ):
+        risks.append(
+            "Secrets handling appears to rely on .env files; local/dev/prod secret management boundaries may be unclear."
+        )
+    if not any(
+        marker in p
+        for p in lower_paths
+        for marker in ("dependabot", "pip-audit", "safety", "bandit", "semgrep", "trivy", "snyk")
+    ):
+        risks.append(
+            "No explicit dependency/security scanning configuration detected; vulnerable packages may go unnoticed."
+        )
+    if any("memory_store.json" in p for p in lower_paths):
+        risks.append(
+            "JSON file-based memory store is suitable for prototyping but can become a scalability/concurrency bottleneck."
+        )
+    if has_api_integration and not any("retry" in p or "backoff" in p for p in lower_paths):
+        risks.append(
+            "API integration is present, but explicit retry/backoff patterns are not evident; rate-limit failures may impact large analyses."
+        )
     if len(paths) > 2500:
         risks.append("Large repository size may hide architectural drift and ownership complexity.")
+    if len(paths) >= 80:
+        risks.append(
+            "Analysis evidence is sample-based and may miss file-level nuances; per-file scoring/coverage depth is limited."
+        )
     if not dependencies:
         risks.append("Dependency manifests were not parsed; stack governance visibility is limited.")
 
