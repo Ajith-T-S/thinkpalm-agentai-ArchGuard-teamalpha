@@ -14,6 +14,24 @@ from src.models.schemas import ArchitectureReport, MemoryRecord, RepoAnalysisRes
 from src.tools.memory_tools import compare_with_previous
 
 
+def _has_meaningful_node_usage(analysis: RepoAnalysisResult) -> bool:
+    sampled_files = [str(p).lower() for p in analysis.evidence.get("sampled_files", [])]
+    node_source_exts = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+    has_node_sources = any(path.endswith(node_source_exts) for path in sampled_files)
+    has_package_json = any(path.endswith("package.json") for path in sampled_files)
+    has_node_dependencies = any(
+        dep.ecosystem == "node" and any(item.strip() for item in dep.dependencies)
+        for dep in analysis.dependencies
+    )
+    return has_node_sources or has_package_json or has_node_dependencies
+
+
+def _should_add_node_artifact_note(analysis: RepoAnalysisResult) -> bool:
+    sampled_files = [str(p).lower() for p in analysis.evidence.get("sampled_files", [])]
+    has_lock = any(path.endswith("package-lock.json") for path in sampled_files)
+    return has_lock and not _has_meaningful_node_usage(analysis)
+
+
 def build_markdown_report(
     analysis: RepoAnalysisResult,
     project_overview: str,
@@ -36,6 +54,8 @@ def build_markdown_report(
         "## Detected Stack",
     ]
     lines.extend([f"- {item}" for item in analysis.tech_stack] or ["- No stack markers detected"])
+    if _should_add_node_artifact_note(analysis):
+        lines.append("- Node.js/package-lock detected, but no meaningful Node dependency usage found.")
 
     lines.append("")
     lines.append("## Module Breakdown")

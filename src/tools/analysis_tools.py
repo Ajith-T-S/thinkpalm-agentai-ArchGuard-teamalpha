@@ -13,25 +13,46 @@ from src.utils.helpers import list_top_level_modules
 def detect_tech_stack(file_paths: Sequence[str], metadata_language: str | None = None) -> List[str]:
     stack = set()
     lower_paths = [p.lower() for p in file_paths]
+    file_names = [Path(p).name.lower() for p in file_paths]
+    path_suffixes = [Path(p).suffix.lower() for p in file_paths]
 
     if metadata_language:
         stack.add(metadata_language)
 
-    indicators = {
-        "python": [".py", "requirements.txt", "pyproject.toml", "pipfile"],
-        "node.js": ["package.json", ".js", ".ts", "yarn.lock", "pnpm-lock.yaml"],
-        "java": ["pom.xml", "build.gradle", ".java"],
-        "go": ["go.mod", ".go"],
-        "dotnet": [".csproj", ".sln", ".cs"],
-        "docker": ["dockerfile", "docker-compose.yml", "docker-compose.yaml"],
-        "github-actions": [".github/workflows"],
-        "terraform": [".tf", "terraform"],
-        "kubernetes": ["k8s", "helm", "chart.yaml"],
-    }
+    if any(suffix == ".py" for suffix in path_suffixes) or any(
+        name in {"requirements.txt", "pyproject.toml", "pipfile"} for name in file_names
+    ):
+        stack.add("python")
 
-    for tech, patterns in indicators.items():
-        if any(any(pattern in path for pattern in patterns) for path in lower_paths):
-            stack.add(tech)
+    if any(suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} for suffix in path_suffixes) or any(
+        name in {"yarn.lock", "pnpm-lock.yaml"} for name in file_names
+    ):
+        stack.add("node.js")
+    if "package.json" in file_names:
+        stack.add("node.js")
+
+    if any(suffix == ".java" for suffix in path_suffixes) or any(
+        name in {"pom.xml", "build.gradle"} for name in file_names
+    ):
+        stack.add("java")
+
+    if any(suffix == ".go" for suffix in path_suffixes) or "go.mod" in file_names:
+        stack.add("go")
+
+    if any(suffix in {".csproj", ".sln", ".cs"} for suffix in path_suffixes):
+        stack.add("dotnet")
+
+    if any(name in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for name in file_names):
+        stack.add("docker")
+
+    if any(".github/workflows/" in path for path in lower_paths):
+        stack.add("github-actions")
+
+    if any(suffix == ".tf" for suffix in path_suffixes) or any("terraform" in path for path in lower_paths):
+        stack.add("terraform")
+
+    if any("k8s" in path or "helm" in path for path in lower_paths) or "chart.yaml" in file_names:
+        stack.add("kubernetes")
 
     if any("streamlit" in p for p in lower_paths):
         stack.add("streamlit")
