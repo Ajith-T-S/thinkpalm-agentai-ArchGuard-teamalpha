@@ -86,13 +86,15 @@ def analyze(
             )
 
     console.print("\n[bold]Architecture drift:[/bold]")
-    console.print(
-        f"- Status: [cyan]{comparison.get('drift_status')}[/cyan]\n"
-        f"- Improvement score: [cyan]{comparison.get('improvement_score')}[/cyan]/100\n"
-        f"- Previous run: {comparison.get('previous_analyzed_at') or 'N/A'}\n"
-        f"- Stack changed: {comparison.get('stack_changed')}\n"
-        f"- Focus changed: {comparison.get('focus_changed')}"
-    )
+    if not comparison.get("previous_exists"):
+        console.print("- No previous run in memory; the next analysis will compare to this one.")
+    else:
+        console.print(
+            f"- Status (vs previous run): [cyan]{comparison.get('drift_status')}[/cyan]\n"
+            f"- Previous run: {comparison.get('previous_analyzed_at') or 'N/A'}\n"
+            f"- Stack changed: {comparison.get('stack_changed')}\n"
+            f"- Focus changed: {comparison.get('focus_changed')}"
+        )
     new_risks = comparison.get("new_risks", [])
     resolved_risks = comparison.get("resolved_risks", [])
     if new_risks:

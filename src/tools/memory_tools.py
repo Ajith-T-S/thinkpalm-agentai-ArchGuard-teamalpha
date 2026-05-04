@@ -80,6 +80,11 @@ def compare_with_previous(
     architecture_patterns: list[str] | None = None,
     entry_points_count: int = 0,
     config_files_count: int = 0,
+    inventory_file_paths: list[str] | None = None,
+    sampled_file_paths: list[str] | None = None,
+    config_file_paths: list[str] | None = None,
+    entry_point_paths: list[str] | None = None,
+    key_directories: list[str] | None = None,
 ) -> Dict:
     record = MemoryRecord(
         repo_key=repo_key,
@@ -96,5 +101,10 @@ def compare_with_previous(
         architecture_patterns=architecture_patterns or [],
         entry_points_count=entry_points_count,
         config_files_count=config_files_count,
+        inventory_file_paths=inventory_file_paths or [],
+        sampled_file_paths=sampled_file_paths or [],
+        config_file_paths=config_file_paths or [],
+        entry_point_paths=entry_point_paths or [],
+        key_directories=key_directories or [],
     )
     return memory_store.compare_with_previous(record).model_dump()

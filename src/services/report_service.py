@@ -284,6 +284,7 @@ class ReviewPipeline:
             ),
             entry_points_count=len(analysis.structure.entry_points),
             config_files_count=len(analysis.structure.config_files),
+            inventory_file_paths=analysis.evidence.get("inventory_files", [])[:5000],
             sampled_file_paths=analysis.evidence.get("sampled_files", [])[:300],
             config_file_paths=analysis.structure.config_files[:120],
             entry_point_paths=analysis.structure.entry_points[:120],
@@ -305,6 +306,11 @@ class ReviewPipeline:
             architecture_patterns=memory_record.architecture_patterns,
             entry_points_count=memory_record.entry_points_count,
             config_files_count=memory_record.config_files_count,
+            inventory_file_paths=memory_record.inventory_file_paths,
+            sampled_file_paths=memory_record.sampled_file_paths,
+            config_file_paths=memory_record.config_file_paths,
+            entry_point_paths=memory_record.entry_point_paths,
+            key_directories=memory_record.key_directories,
         )
 
         self.memory_store.store_analysis_memory(memory_record)

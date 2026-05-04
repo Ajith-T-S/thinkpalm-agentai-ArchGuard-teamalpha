@@ -34,6 +34,7 @@ class RepositoryAnalysisAgent:
         self.github_tools = build_github_tools(github_service)
         self.llm = llm
         self.max_files_to_analyze = int(os.getenv("MAX_FILES_TO_ANALYZE", "120"))
+        self.max_files_for_drift = int(os.getenv("MAX_FILES_FOR_DRIFT", "5000"))
         self.max_file_bytes = int(os.getenv("MAX_FILE_BYTES", "120000"))
         self.max_react_iterations = int(os.getenv("MAX_REACT_ITERATIONS", "8"))
         self.target_file_reads = int(os.getenv("TARGET_FILE_READS", "12"))
@@ -117,7 +118,7 @@ class RepositoryAnalysisAgent:
                         "owner": owner,
                         "repo": repo,
                         "branch": branch,
-                        "max_files": self.max_files_to_analyze,
+                        "max_files": self.max_files_for_drift,
                         "max_file_bytes": self.max_file_bytes,
                     }
                     files_payload = list_tool.invoke(action_input)
@@ -254,6 +255,7 @@ class RepositoryAnalysisAgent:
 
         evidence = {
             "sampled_files": prioritized_paths[:120],
+            "inventory_files": [item["path"] for item in files_payload][: self.max_files_for_drift],
             "read_files": list(file_contents.keys()),
             "metadata": metadata.model_dump(),
             "heuristic_architecture_patterns": patterns,

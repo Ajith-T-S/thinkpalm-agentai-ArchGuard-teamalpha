@@ -397,20 +397,30 @@ if result:
             + len(architecture_changes.get("added_key_directories", []))
             + len(architecture_changes.get("removed_key_directories", []))
         )
-        st.markdown(
-            f"**Current drift assessment:** `{comparison.get('drift_status', 'n/a')}` "
-            f"with score `{comparison.get('improvement_score', 'n/a')}/100`."
-        )
+        if not comparison.get("previous_exists", False):
+            st.info(
+                "No previous analysis for this repo in memory yet. The next run will compare against this one."
+            )
+        else:
+            st.markdown(
+                f"**Current drift assessment (vs previous run):** `{comparison.get('drift_status', 'n/a')}`"
+            )
+            st.caption(
+                "Label is derived from risk and structure deltas vs the last saved run. "
+                "Risk text and sampled files can differ between runs even when the repo is unchanged, so use the tables below as the source of truth."
+            )
 
+        file_change_basis = file_changes.get("basis", "sampled_files")
+        added_label = "Repo Files Added" if file_change_basis == "repository_inventory" else "Newly Sampled Files"
+        removed_label = "Repo Files Removed" if file_change_basis == "repository_inventory" else "No Longer Sampled Files"
         summary_rows = [
             {
                 "Previous Run": comparison.get("previous_analyzed_at", "n/a"),
                 "Drift Status": comparison.get("drift_status", "n/a"),
-                "Improvement Score": comparison.get("improvement_score", "n/a"),
                 "Focus Changed": to_yes_no(comparison.get("focus_changed", False)),
                 "Stack Changed": to_yes_no(comparison.get("stack_changed", False)),
-                "Files Added": file_changes.get("added_count", 0),
-                "Files Removed": file_changes.get("removed_count", 0),
+                added_label: file_changes.get("added_count", 0),
+                removed_label: file_changes.get("removed_count", 0),
                 "Architecture Changes": architecture_change_count,
                 "Module Delta": comparison.get("module_delta", 0),
                 "Dependency Delta": comparison.get("dependency_delta", 0),
@@ -418,6 +428,15 @@ if result:
         ]
         st.markdown("**Drift Summary**")
         st.dataframe(summary_rows, width="stretch")
+        if file_change_basis == "repository_inventory":
+            st.caption(
+                "File add/remove counts are based on repository inventory snapshots between runs."
+            )
+        else:
+            st.caption(
+                "File counts reflect analysis sampling coverage changes between runs, "
+                "not actual repository file creation/deletion."
+            )
 
         st.markdown("**Drift Timeline (Run History)**")
         if history and len(history) > 1:
@@ -450,12 +469,15 @@ if result:
         else:
             st.caption("No architecture-level structural changes between runs.")
 
-        st.markdown("**Sampled File Changes**")
+        detail_header = "Repository File Changes (sample)" if file_change_basis == "repository_inventory" else "Sampled File Changes"
+        st.markdown(f"**{detail_header}**")
         file_rows = []
         for item in file_changes.get("added_samples", []):
-            file_rows.append({"Change Type": "Added File", "Path": item})
+            change_type = "Added Repo File" if file_change_basis == "repository_inventory" else "Newly Sampled File"
+            file_rows.append({"Change Type": change_type, "Path": item})
         for item in file_changes.get("removed_samples", []):
-            file_rows.append({"Change Type": "Removed File", "Path": item})
+            change_type = "Removed Repo File" if file_change_basis == "repository_inventory" else "No Longer Sampled File"
+            file_rows.append({"Change Type": change_type, "Path": item})
         if file_rows:
             st.dataframe(file_rows, width="stretch")
         else:

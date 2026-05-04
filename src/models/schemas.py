@@ -135,6 +135,7 @@ class MemoryRecord(BaseModel):
     entry_points_count: int = 0
     config_files_count: int = 0
     sampled_file_paths: List[str] = Field(default_factory=list)
+    inventory_file_paths: List[str] = Field(default_factory=list)
     config_file_paths: List[str] = Field(default_factory=list)
     entry_point_paths: List[str] = Field(default_factory=list)
     key_directories: List[str] = Field(default_factory=list)
@@ -153,7 +154,13 @@ class MemoryComparison(BaseModel):
     stack_changed: bool = False
     pattern_changes: Dict[str, List[str]] = Field(default_factory=lambda: {"added": [], "removed": []})
     file_changes: Dict[str, Any] = Field(
-        default_factory=lambda: {"added_count": 0, "removed_count": 0, "added_samples": [], "removed_samples": []}
+        default_factory=lambda: {
+            "basis": "sampled_files",
+            "added_count": 0,
+            "removed_count": 0,
+            "added_samples": [],
+            "removed_samples": [],
+        }
     )
     architecture_changes: Dict[str, List[str]] = Field(
         default_factory=lambda: {

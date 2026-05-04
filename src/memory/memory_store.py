@@ -105,10 +105,18 @@ class MemoryStore:
         previous_patterns = set(previous.get("architecture_patterns", []))
         current_patterns = set(record.architecture_patterns)
 
-        previous_sampled_files = set(previous.get("sampled_file_paths", []))
-        current_sampled_files = set(record.sampled_file_paths)
-        added_files = sorted(current_sampled_files - previous_sampled_files)
-        removed_files = sorted(previous_sampled_files - current_sampled_files)
+        previous_inventory_files = set(previous.get("inventory_file_paths", []))
+        current_inventory_files = set(record.inventory_file_paths)
+        if previous_inventory_files and current_inventory_files:
+            added_files = sorted(current_inventory_files - previous_inventory_files)
+            removed_files = sorted(previous_inventory_files - current_inventory_files)
+            file_change_basis = "repository_inventory"
+        else:
+            previous_sampled_files = set(previous.get("sampled_file_paths", []))
+            current_sampled_files = set(record.sampled_file_paths)
+            added_files = sorted(current_sampled_files - previous_sampled_files)
+            removed_files = sorted(previous_sampled_files - current_sampled_files)
+            file_change_basis = "sampled_files"
 
         previous_config_files = set(previous.get("config_file_paths", []))
         current_config_files = set(record.config_file_paths)
@@ -126,6 +134,7 @@ class MemoryStore:
             "removed": sorted(previous_patterns - current_patterns),
         }
         file_changes = {
+            "basis": file_change_basis,
             "added_count": len(added_files),
             "removed_count": len(removed_files),
             "added_samples": added_files[:20],
