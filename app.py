@@ -75,39 +75,192 @@ def compute_confidence(analysis: dict, report: dict) -> int:
     return max(0, min(99, score))
 
 
-def markdown_to_pdf_bytes(markdown_text: str, title: str) -> bytes | None:
+def _pdf_escape(value: object) -> str:
+    text = str(value) if value is not None else ""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _pdf_bullets(story: list, styles, heading: str, items: list[str], empty_text: str) -> None:
+    from reportlab.platypus import Paragraph, Spacer
+
+    story.append(Paragraph(_pdf_escape(heading), styles["Heading3"]))
+    if items:
+        for item in items:
+            story.append(Paragraph(f"• {_pdf_escape(item)}", styles["BodyText"]))
+    else:
+        story.append(Paragraph(_pdf_escape(empty_text), styles["BodyText"]))
+    story.append(Spacer(1, 8))
+
+
+def build_readable_pdf_bytes(
+    report: dict,
+    analysis: dict,
+    comparison: dict,
+    history: list[dict],
+) -> bytes | None:
     try:
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError:
         return None
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
-    title_style = styles["Title"]
-    body_style = styles["BodyText"]
-    heading_style = styles["Heading3"]
-    body_style.spaceAfter = 6
+    styles["BodyText"].spaceAfter = 5
 
-    content = [Paragraph(title, title_style), Spacer(1, 10)]
+    story: list = [
+        Paragraph(f"Architecture Report: {_pdf_escape(report.get('repo_full_name', 'n/a'))}", styles["Title"]),
+        Spacer(1, 8),
+        Paragraph(f"Generated: {_pdf_escape(to_local_time(report.get('generated_at')))}", styles["BodyText"]),
+        Paragraph(f"Focus: {_pdf_escape(report.get('focus', 'general'))}", styles["BodyText"]),
+        Spacer(1, 10),
+        Paragraph("Executive Summary", styles["Heading2"]),
+        Paragraph(_pdf_escape(report.get("summary", "No summary available.")), styles["BodyText"]),
+        Spacer(1, 8),
+    ]
 
-    for raw_line in markdown_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            content.append(Spacer(1, 6))
-            continue
-        if line.startswith("#"):
-            heading = line.lstrip("#").strip()
-            content.append(Paragraph(heading, heading_style))
-            continue
-        if line.startswith("- "):
-            line = f"• {line[2:].strip()}"
-        line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        content.append(Paragraph(line, body_style))
+    analytics_table = Table(
+        [
+            ["Files scanned", "Dependencies", "Risks", "Recommendations", "Drift status"],
+            [
+                str(len(analysis.get("evidence", {}).get("sampled_files", []))),
+                str(sum(len(dep.get("dependencies", [])) for dep in analysis.get("dependencies", []))),
+                str(len(report.get("risks_and_antipatterns", []))),
+                str(len(report.get("recommendations", []))),
+                str(comparison.get("drift_status", "n/a")),
+            ],
+        ],
+        colWidths=[90, 90, 70, 120, 90],
+    )
+    analytics_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ]
+        )
+    )
+    story.extend([analytics_table, Spacer(1, 12)])
 
-    doc.build(content)
+    _pdf_bullets(story, styles, "Detected Stack", report.get("detected_stack", []), "No stack markers detected.")
+    _pdf_bullets(story, styles, "Modules", report.get("module_breakdown", []), "No modules identified.")
+    _pdf_bullets(
+        story,
+        styles,
+        "Architecture Observations",
+        report.get("architecture_observations", []),
+        "No observations generated.",
+    )
+    _pdf_bullets(
+        story,
+        styles,
+        "Risks / Anti-patterns",
+        report.get("risks_and_antipatterns", []),
+        "No significant risks detected.",
+    )
+    _pdf_bullets(
+        story,
+        styles,
+        "Recommendations",
+        report.get("recommendations", []),
+        "No recommendations generated.",
+    )
+    _pdf_bullets(story, styles, "Next Steps", report.get("next_steps", []), "No next steps generated.")
+
+    action_plan = report.get("action_plan", [])
+    story.append(Paragraph("Prioritized Action Plan", styles["Heading3"]))
+    if action_plan:
+        plan_cell_style = ParagraphStyle(
+            "PlanCell",
+            parent=styles["BodyText"],
+            fontSize=8,
+            leading=10,
+            spaceAfter=0,
+        )
+        plan_rows = [
+            [
+                Paragraph("Priority", plan_cell_style),
+                Paragraph("Action", plan_cell_style),
+                Paragraph("Owner", plan_cell_style),
+                Paragraph("Effort", plan_cell_style),
+                Paragraph("Impact", plan_cell_style),
+                Paragraph("Due", plan_cell_style),
+            ]
+        ]
+        for item in action_plan:
+            plan_rows.append(
+                [
+                    Paragraph(_pdf_escape(item.get("priority", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("action", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("owner_role", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("effort", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("impact", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("due_window", "")), plan_cell_style),
+                ]
+            )
+        plan_table = Table(plan_rows, repeatRows=1, colWidths=[45, 210, 95, 45, 45, 55])
+        plan_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("WORDWRAP", (0, 0), (-1, -1), "CJK"),
+                ]
+            )
+        )
+        story.append(plan_table)
+    else:
+        story.append(Paragraph("No action plan generated.", styles["BodyText"]))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Architecture Drift Summary", styles["Heading3"]))
+    drift_lines = [
+        f"Baseline source: {comparison.get('comparison_source', 'memory')}",
+        f"Previous run: {to_local_time(comparison.get('previous_analyzed_at'))}",
+        f"Previous commit: {comparison.get('previous_commit_sha', 'n/a')}",
+        f"Current commit: {comparison.get('current_commit_sha', 'n/a')}",
+        f"Stack changed: {comparison.get('stack_changed', False)} | Focus changed: {comparison.get('focus_changed', False)}",
+        f"Module delta: {comparison.get('module_delta', 0)} | Dependency delta: {comparison.get('dependency_delta', 0)}",
+    ]
+    for line in drift_lines:
+        story.append(Paragraph(_pdf_escape(line), styles["BodyText"]))
+    story.append(Spacer(1, 8))
+
+    history_rows = history[:12]
+    story.append(Paragraph("Run History", styles["Heading3"]))
+    if history_rows:
+        rows = [["Run Time", "Focus", "Risk Count", "Module Count", "Dependency Count"]]
+        for row in history_rows:
+            rows.append(
+                [
+                    to_local_time(row.get("analyzed_at")),
+                    str(row.get("focus", "")),
+                    str(row.get("risk_count", 0)),
+                    str(row.get("module_count", 0)),
+                    str(row.get("dependency_count", 0)),
+                ]
+            )
+        history_table = Table(rows, repeatRows=1)
+        history_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]
+            )
+        )
+        story.append(history_table)
+    else:
+        story.append(Paragraph("No run history available.", styles["BodyText"]))
+
+    doc.build(story)
     return buffer.getvalue()
 
 
@@ -547,6 +700,10 @@ if result:
     with tabs[8]:
         st.subheader("Reports")
         st.markdown(f"**Saved report path:** `{report.get('report_path')}`")
+        current_repo_key = comparison.get("repo_key", report.get("repo_full_name"))
+        repo_history = memory_store.get_run_history(limit=10, repo_key=current_repo_key)
+        all_history = memory_store.get_run_history(limit=20)
+
         st.download_button(
             label="Download markdown report",
             data=report["markdown_report"],
@@ -559,9 +716,7 @@ if result:
             file_name=f"{report['repo_full_name'].replace('/', '_')}_analysis_result.json",
             mime="application/json",
         )
-        pdf_bytes = markdown_to_pdf_bytes(
-            report["markdown_report"], f"Architecture Report: {report['repo_full_name']}"
-        )
+        pdf_bytes = build_readable_pdf_bytes(report=report, analysis=analysis, comparison=comparison, history=repo_history)
         if pdf_bytes:
             st.download_button(
                 label="Download PDF report",
@@ -576,10 +731,6 @@ if result:
             st.markdown(report["markdown_report"])
 
         st.markdown("**Run history (from memory store)**")
-        current_repo_key = comparison.get("repo_key", report.get("repo_full_name"))
-        repo_history = memory_store.get_run_history(limit=10, repo_key=current_repo_key)
-        all_history = memory_store.get_run_history(limit=20)
-
         st.markdown("Current repository history")
         if repo_history:
             st.dataframe(localize_history_rows(repo_history), width="stretch")
