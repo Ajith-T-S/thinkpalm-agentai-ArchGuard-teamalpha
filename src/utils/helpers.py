@@ -95,26 +95,40 @@ PRIORITY_FILES = (
 )
 
 
-def parse_github_input(value: str) -> Tuple[str, str]:
-    """Parse owner/repo from URL or shorthand."""
+def parse_github_input(value: str) -> Tuple[str, str, Optional[str]]:
+    """Parse owner/repo/branch from URL or shorthand.
+
+    Supported input formats:
+    - owner/repo
+    - owner/repo@branch
+    - https://github.com/owner/repo
+    - https://github.com/owner/repo/tree/branch
+    """
     cleaned = value.strip()
     if not cleaned:
         raise ValueError("GitHub repository input cannot be empty.")
 
+    branch: Optional[str] = None
     if cleaned.startswith("http://") or cleaned.startswith("https://"):
         match = re.search(r"github\.com/([^/\s]+)/([^/\s#]+)", cleaned)
         if not match:
             raise ValueError("Could not parse owner/repo from GitHub URL.")
         owner = match.group(1)
         repo = match.group(2).replace(".git", "")
-        return owner, repo
+        tree_match = re.search(r"/tree/([^?#\s]+)", cleaned)
+        if tree_match:
+            branch = tree_match.group(1).strip()
+        return owner, repo, branch or None
 
     if "/" not in cleaned:
         raise ValueError("Use owner/repo format, e.g. langchain-ai/langchain.")
 
     owner, repo = cleaned.split("/", 1)
+    if "@" in repo:
+        repo, branch = repo.rsplit("@", 1)
+        branch = branch.strip() or None
     repo = repo.replace(".git", "")
-    return owner.strip(), repo.strip()
+    return owner.strip(), repo.strip(), branch
 
 
 def should_skip_file(path: str, size: int, max_file_bytes: int) -> bool:

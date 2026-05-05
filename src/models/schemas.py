@@ -120,6 +120,8 @@ class ArchitectureReport(BaseModel):
 
 class MemoryRecord(BaseModel):
     repo_key: str
+    branch: Optional[str] = None
+    commit_sha: Optional[str] = None
     analyzed_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
     focus: ReportFocus = "general"
     report_depth: Literal["short", "standard", "deep"] = "deep"
@@ -143,8 +145,13 @@ class MemoryRecord(BaseModel):
 
 class MemoryComparison(BaseModel):
     repo_key: str
+    branch: Optional[str] = None
     previous_exists: bool
     previous_analyzed_at: Optional[str] = None
+    previous_commit_sha: Optional[str] = None
+    current_commit_sha: Optional[str] = None
+    same_commit: bool = False
+    comparison_source: Literal["memory", "parent_commit", "user_commit"] = "memory"
     new_risks: List[str] = Field(default_factory=list)
     resolved_risks: List[str] = Field(default_factory=list)
     focus_changed: bool = False

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -77,6 +77,7 @@ class RepositoryAnalysisAgent:
         self,
         owner: str,
         repo: str,
+        branch: Optional[str] = None,
         progress_callback: Callable[[str, str, str], None] | None = None,
     ) -> Tuple[RepoMetadata, str, List[Dict[str, Any]], List[str], Dict[str, str], List[ReActStep], ReActSummary]:
         fetch_tool = self.github_tools[0]
@@ -107,7 +108,7 @@ class RepositoryAnalysisAgent:
                     action_input = {"owner": owner, "repo": repo}
                     metadata_payload = fetch_tool.invoke(action_input)
                     metadata = RepoMetadata(**metadata_payload)
-                    branch = metadata.default_branch
+                    branch = branch or metadata.default_branch
                     observation = f"Fetched metadata. default_branch={branch}, language={metadata.language}, stars={metadata.stars}"
                     if progress_callback:
                         progress_callback("Fetching repo", "completed", observation)
@@ -234,6 +235,7 @@ class RepositoryAnalysisAgent:
         self,
         owner: str,
         repo: str,
+        branch: Optional[str] = None,
         focus: str = "general",
         report_depth: str = "deep",
         progress_callback: Callable[[str, str, str], None] | None = None,
@@ -243,6 +245,7 @@ class RepositoryAnalysisAgent:
         metadata, branch, files_payload, prioritized_paths, file_contents, trace, react_summary = self._run_react_loop(
             owner=owner,
             repo=repo,
+            branch=branch,
             progress_callback=progress_callback,
         )
 

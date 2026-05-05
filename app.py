@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from io import BytesIO
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -31,6 +32,26 @@ def render_bullets(title: str, items: list, empty_text: str = "No data available
 
 def to_yes_no(value: bool) -> str:
     return "Yes" if value else "No"
+
+
+def to_local_time(iso_utc: str | None) -> str:
+    if not iso_utc:
+        return "n/a"
+    try:
+        normalized = iso_utc.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    except ValueError:
+        return iso_utc
+
+
+def localize_history_rows(rows: list[dict]) -> list[dict]:
+    localized: list[dict] = []
+    for row in rows:
+        updated = dict(row)
+        updated["analyzed_at"] = to_local_time(updated.get("analyzed_at"))
+        localized.append(updated)
+    return localized
 
 
 def compute_confidence(analysis: dict, report: dict) -> int:
@@ -227,7 +248,12 @@ if "last_result" not in st.session_state:
 with st.sidebar:
     st.subheader("Inputs")
     repo_input = st.text_input("GitHub repo URL or owner/repo", value="langchain-ai/langchain")
+    st.caption(
+        "Supported: `owner/repo`, `owner/repo@branch`, "
+        "`https://github.com/owner/repo`, or `.../tree/branch`."
+    )
     github_token = st.text_input("GitHub token (optional)", type="password")
+    baseline_commit = st.text_input("Baseline commit (optional)", placeholder="e.g., f922d1f")
     focus = st.selectbox("Report focus", options=["general", "security", "scalability", "maintainability"])
     report_depth = "deep"
     analyze_clicked = st.button("Analyze repository", type="primary")
@@ -247,19 +273,23 @@ if analyze_clicked:
         status_box.write(f"{icon} **{stage}** ({state}) - {details}")
 
     try:
-        owner, repo = parse_github_input(repo_input)
+        owner, repo, branch = parse_github_input(repo_input)
         token = github_token or os.getenv("GITHUB_TOKEN")
         llm = LLMService().create_chat_model()
+        github_service = GitHubService(token=token)
         pipeline = ReviewPipeline(
-            repo_agent=RepositoryAnalysisAgent(github_service=GitHubService(token=token), llm=llm),
+            repo_agent=RepositoryAnalysisAgent(github_service=github_service, llm=llm),
             review_agent=ArchitectureReviewAgent(llm=llm),
             writer_agent=ReportWriterAgent(llm=llm),
             memory_store=memory_store,
+            github_service=github_service,
         )
         with st.spinner("Analyzing repository..."):
             result = pipeline.run(
                 owner=owner,
                 repo=repo,
+                branch=branch,
+                baseline_commit=baseline_commit.strip() or None,
                 focus=focus,
                 report_depth=report_depth,
                 progress_callback=on_progress,
@@ -415,7 +445,10 @@ if result:
         removed_label = "Repo Files Removed" if file_change_basis == "repository_inventory" else "No Longer Sampled Files"
         summary_rows = [
             {
-                "Previous Run": comparison.get("previous_analyzed_at", "n/a"),
+                "Previous Run": to_local_time(comparison.get("previous_analyzed_at")),
+                "Branch": comparison.get("branch", "n/a"),
+                "Previous Commit": comparison.get("previous_commit_sha", "n/a"),
+                "Current Commit": comparison.get("current_commit_sha", "n/a"),
                 "Drift Status": comparison.get("drift_status", "n/a"),
                 "Focus Changed": to_yes_no(comparison.get("focus_changed", False)),
                 "Stack Changed": to_yes_no(comparison.get("stack_changed", False)),
@@ -428,6 +461,12 @@ if result:
         ]
         st.markdown("**Drift Summary**")
         st.dataframe(summary_rows, width="stretch")
+        if comparison.get("comparison_source") == "parent_commit":
+            st.caption("Baseline for this run is inferred from the parent commit on GitHub (HEAD~1).")
+        elif comparison.get("comparison_source") == "user_commit":
+            st.caption("Baseline for this run is the user-provided commit SHA.")
+        if comparison.get("same_commit"):
+            st.caption("Current and previous runs point to the same commit SHA; drift deltas may reflect non-code sampling noise.")
         if file_change_basis == "repository_inventory":
             st.caption(
                 "File add/remove counts are based on repository inventory snapshots between runs."
@@ -442,6 +481,7 @@ if result:
         if history and len(history) > 1:
             timeline_df = pd.DataFrame(history)
             timeline_df = timeline_df.sort_values("analyzed_at")
+            timeline_df["analyzed_at"] = timeline_df["analyzed_at"].apply(to_local_time)
             timeline_chart = timeline_df.set_index("analyzed_at")[["risk_count", "module_count", "dependency_count"]]
             st.line_chart(timeline_chart, height=220)
             st.caption("Trend across recent runs for this repository.")
@@ -536,19 +576,19 @@ if result:
             st.markdown(report["markdown_report"])
 
         st.markdown("**Run history (from memory store)**")
-        current_repo_key = report.get("repo_full_name")
+        current_repo_key = comparison.get("repo_key", report.get("repo_full_name"))
         repo_history = memory_store.get_run_history(limit=10, repo_key=current_repo_key)
         all_history = memory_store.get_run_history(limit=20)
 
         st.markdown("Current repository history")
         if repo_history:
-            st.dataframe(repo_history, width="stretch")
+            st.dataframe(localize_history_rows(repo_history), width="stretch")
         else:
             st.caption("No previous runs found for this repository.")
 
         with st.expander("Recent runs across repositories"):
             if all_history:
-                st.dataframe(all_history, width="stretch")
+                st.dataframe(localize_history_rows(all_history), width="stretch")
             else:
                 st.caption("No run history available yet.")
 else:

@@ -29,12 +29,13 @@ def analyze(
     repository: str = typer.Argument(..., help="GitHub URL or owner/repo"),
     focus: str = typer.Option("general", help="general | security | scalability | maintainability"),
     report_depth: str = typer.Option("deep", help="short | standard | deep"),
+    baseline_commit: Optional[str] = typer.Option(None, help="Optional baseline commit SHA for drift comparison"),
     github_token: Optional[str] = typer.Option(None, help="Optional GitHub token"),
     verbose: bool = typer.Option(False, "--verbose", help="Show raw JSON details for debugging."),
 ) -> None:
     """Run architecture analysis for a repository."""
     load_dotenv()
-    owner, repo = parse_github_input(repository)
+    owner, repo, branch = parse_github_input(repository)
     token = github_token or os.getenv("GITHUB_TOKEN")
 
     try:
@@ -46,8 +47,16 @@ def analyze(
             review_agent=ArchitectureReviewAgent(llm=llm),
             writer_agent=ReportWriterAgent(llm=llm),
             memory_store=memory_store,
+            github_service=github_service,
         )
-        result = pipeline.run(owner=owner, repo=repo, focus=focus, report_depth=report_depth)
+        result = pipeline.run(
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            baseline_commit=baseline_commit,
+            focus=focus,
+            report_depth=report_depth,
+        )
     except (ValueError, GitHubServiceError) as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -91,7 +100,10 @@ def analyze(
     else:
         console.print(
             f"- Status (vs previous run): [cyan]{comparison.get('drift_status')}[/cyan]\n"
+            f"- Baseline source: {comparison.get('comparison_source', 'memory')}\n"
             f"- Previous run: {comparison.get('previous_analyzed_at') or 'N/A'}\n"
+            f"- Previous commit: {comparison.get('previous_commit_sha') or 'N/A'}\n"
+            f"- Current commit: {comparison.get('current_commit_sha') or 'N/A'}\n"
             f"- Stack changed: {comparison.get('stack_changed')}\n"
             f"- Focus changed: {comparison.get('focus_changed')}"
         )

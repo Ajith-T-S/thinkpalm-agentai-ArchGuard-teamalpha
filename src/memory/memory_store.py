@@ -85,11 +85,12 @@ class MemoryStore:
         records.sort(key=lambda x: x.get("analyzed_at") or "", reverse=True)
         return records[:limit]
 
-    def compare_with_previous(self, record: MemoryRecord) -> MemoryComparison:
-        previous = self.retrieve_analysis_memory(record.repo_key)
-        if not previous:
-            return MemoryComparison(repo_key=record.repo_key, previous_exists=False)
-
+    def _compare_record_against_previous(
+        self,
+        record: MemoryRecord,
+        previous: Dict[str, Any],
+        comparison_source: str = "memory",
+    ) -> MemoryComparison:
         previous_risks = set(previous.get("risks", []))
         current_risks = set(record.risks)
         new_risks = sorted(current_risks - previous_risks)
@@ -98,6 +99,8 @@ class MemoryStore:
         previous_risk_count = int(previous.get("risk_count", len(previous_risks)))
         previous_module_count = int(previous.get("module_count", 0))
         previous_dependency_count = int(previous.get("dependency_count", 0))
+        previous_branch = previous.get("branch")
+        previous_commit_sha = previous.get("commit_sha")
         previous_stack_signature = previous.get(
             "stack_signature",
             "|".join(sorted([s.lower() for s in previous.get("tech_stack", [])])),
@@ -186,8 +189,13 @@ class MemoryStore:
 
         return MemoryComparison(
             repo_key=record.repo_key,
+            branch=record.branch or previous_branch,
             previous_exists=True,
             previous_analyzed_at=previous.get("analyzed_at"),
+            previous_commit_sha=previous_commit_sha,
+            current_commit_sha=record.commit_sha,
+            same_commit=bool(previous_commit_sha and record.commit_sha and previous_commit_sha == record.commit_sha),
+            comparison_source=comparison_source,  # type: ignore[arg-type]
             new_risks=new_risks,
             resolved_risks=resolved_risks,
             focus_changed=previous.get("focus") != record.focus,
@@ -201,3 +209,24 @@ class MemoryStore:
             drift_status=drift_status,  # type: ignore[arg-type]
             improvement_score=score,
         )
+
+    def compare_with_previous(self, record: MemoryRecord) -> MemoryComparison:
+        previous = self.retrieve_analysis_memory(record.repo_key)
+        if not previous:
+            return MemoryComparison(
+                repo_key=record.repo_key,
+                branch=record.branch,
+                previous_exists=False,
+                current_commit_sha=record.commit_sha,
+                comparison_source="memory",
+            )
+        return self._compare_record_against_previous(record=record, previous=previous, comparison_source="memory")
+
+    def compare_with_reference(
+        self,
+        record: MemoryRecord,
+        previous_record: MemoryRecord,
+        comparison_source: str = "parent_commit",
+    ) -> MemoryComparison:
+        previous = previous_record.model_dump()
+        return self._compare_record_against_previous(record=record, previous=previous, comparison_source=comparison_source)
