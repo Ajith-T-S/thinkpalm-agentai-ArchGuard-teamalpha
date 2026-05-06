@@ -85,7 +85,7 @@ class RepositoryAnalysisAgent:
         read_tool = self.github_tools[2]
 
         metadata: RepoMetadata | None = None
-        branch = "main"
+        selected_branch = branch
         files_payload: List[Dict[str, Any]] = []
         prioritized_paths: List[str] = []
         file_contents: Dict[str, str] = {}
@@ -108,8 +108,11 @@ class RepositoryAnalysisAgent:
                     action_input = {"owner": owner, "repo": repo}
                     metadata_payload = fetch_tool.invoke(action_input)
                     metadata = RepoMetadata(**metadata_payload)
-                    branch = branch or metadata.default_branch
-                    observation = f"Fetched metadata. default_branch={branch}, language={metadata.language}, stars={metadata.stars}"
+                    selected_branch = selected_branch or metadata.default_branch
+                    observation = (
+                        f"Fetched metadata. default_branch={metadata.default_branch}, "
+                        f"analyzing_branch={selected_branch}, language={metadata.language}, stars={metadata.stars}"
+                    )
                     if progress_callback:
                         progress_callback("Fetching repo", "completed", observation)
                 elif not files_payload:
@@ -118,7 +121,7 @@ class RepositoryAnalysisAgent:
                     action_input = {
                         "owner": owner,
                         "repo": repo,
-                        "branch": branch,
+                        "branch": selected_branch,
                         "max_files": self.max_files_for_drift,
                         "max_file_bytes": self.max_file_bytes,
                     }
@@ -154,7 +157,7 @@ class RepositoryAnalysisAgent:
                     next_path = unread_paths[0]
                     thought = "Need file-level evidence from high-priority configuration or entrypoint files."
                     action = "read_repo_file_tool"
-                    action_input = {"owner": owner, "repo": repo, "path": next_path, "branch": branch}
+                    action_input = {"owner": owner, "repo": repo, "path": next_path, "branch": selected_branch}
                     content = read_tool.invoke(action_input)
                     if content:
                         file_contents[next_path] = content[:20000]
@@ -229,7 +232,7 @@ class RepositoryAnalysisAgent:
             stop_condition=stop_condition,  # type: ignore[arg-type]
             fallback_used=stop_condition != "enough_evidence",
         )
-        return metadata, branch, files_payload, prioritized_paths, file_contents, trace, react_summary
+        return metadata, selected_branch or "main", files_payload, prioritized_paths, file_contents, trace, react_summary
 
     def run(
         self,

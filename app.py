@@ -385,6 +385,26 @@ st.markdown(
         .stAlert {
             border-radius: 10px !important;
         }
+
+        /* Improve readability of informational captions/help text */
+        .stCaption,
+        div[data-testid="stCaptionContainer"],
+        div[data-testid="stCaptionContainer"] p,
+        small {
+            color: #334155 !important;
+            font-size: 0.95rem !important;
+            line-height: 1.45 !important;
+            font-weight: 500 !important;
+        }
+
+        /* Keep captions readable on sidebar gradient background */
+        section[data-testid="stSidebar"] .stCaption,
+        section[data-testid="stSidebar"] div[data-testid="stCaptionContainer"] p,
+        section[data-testid="stSidebar"] small {
+            color: #f8fafc !important;
+            font-size: 0.9rem !important;
+            font-weight: 500 !important;
+        }
     </style>
     """,
     unsafe_allow_html=True,
