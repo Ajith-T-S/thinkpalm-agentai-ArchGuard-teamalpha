@@ -260,8 +260,8 @@ class RepositoryAnalysisAgent:
         llm_findings = self._llm_observations(metadata, prioritized_paths, focus=focus)
 
         evidence = {
-            "sampled_files": prioritized_paths[:120],
             "inventory_files": [item["path"] for item in files_payload][: self.max_files_for_drift],
+            "sampled_files": prioritized_paths[:120],
             "read_files": list(file_contents.keys()),
             "metadata": metadata.model_dump(),
             "heuristic_architecture_patterns": patterns,

@@ -30,6 +30,66 @@ def render_bullets(title: str, items: list, empty_text: str = "No data available
         st.markdown(f"- {item}")
 
 
+def render_readable_table(rows: list[dict], *, width: str = "stretch") -> None:
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    df = df.rename(
+        columns={
+            "owner_role": "Owner role",
+            "due_window": "Due window",
+        }
+    )
+    df.index = range(1, len(df) + 1)
+    styled = (
+        df.style.set_table_styles(
+            [
+                {
+                    "selector": "th.col_heading",
+                    "props": [
+                        ("background-color", "#1e3a8a"),
+                        ("color", "#ffffff"),
+                        ("font-weight", "700"),
+                        ("font-size", "0.92rem"),
+                        ("text-align", "left"),
+                        ("padding", "8px 10px"),
+                        ("border", "1px solid #c7d2fe"),
+                    ],
+                },
+                {
+                    "selector": "th.row_heading",
+                    "props": [
+                        ("background-color", "#ffffff"),
+                        ("color", "#0f172a"),
+                        ("font-weight", "600"),
+                        ("font-size", "0.9rem"),
+                        ("text-align", "center"),
+                        ("padding", "7px 8px"),
+                        ("border", "1px solid #e2e8f0"),
+                    ],
+                },
+                {
+                    "selector": "th.blank",
+                    "props": [
+                        ("background-color", "#ffffff"),
+                        ("border", "1px solid #e2e8f0"),
+                    ],
+                },
+                {
+                    "selector": "td",
+                    "props": [
+                        ("font-size", "0.9rem"),
+                        ("padding", "7px 10px"),
+                        ("border", "1px solid #e2e8f0"),
+                    ],
+                },
+                {"selector": "table", "props": [("width", "100%"), ("border-collapse", "collapse")]},
+            ]
+        )
+    )
+    st.table(styled)
+
+
 def to_yes_no(value: bool) -> str:
     return "Yes" if value else "No"
 
@@ -341,6 +401,18 @@ st.markdown(
             box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
         }
 
+        /* Improve dataframe header readability (Action Plan and other tables) */
+        div[data-testid="stDataFrame"] [role="columnheader"] {
+            background: #1e3a8a !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            border-right: 1px solid #c7d2fe !important;
+        }
+        div[data-testid="stDataFrame"] [role="columnheader"] * {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+
         div[data-testid="stTabs"] div[role="tablist"] {
             gap: 0.08rem;
             border-bottom: 1px solid #cbd5e1;
@@ -537,7 +609,8 @@ if result:
         st.subheader("Prioritized Action Plan")
         action_plan = report.get("action_plan", [])
         if action_plan:
-            st.dataframe(action_plan, width="stretch")
+            render_readable_table(action_plan)
+            st.caption("Effort shorthand: `S` = Small, `M` = Medium, `L` = Large.")
         else:
             st.caption("No action plan generated for this run.")
 
@@ -633,7 +706,7 @@ if result:
             }
         ]
         st.markdown("**Drift Summary**")
-        st.dataframe(summary_rows, width="stretch")
+        render_readable_table(summary_rows)
         if comparison.get("comparison_source") == "parent_commit":
             st.caption("Baseline for this run is inferred from the parent commit on GitHub (HEAD~1).")
         elif comparison.get("comparison_source") == "user_commit":

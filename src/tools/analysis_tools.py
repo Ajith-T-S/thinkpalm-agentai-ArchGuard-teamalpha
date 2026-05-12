@@ -10,6 +10,29 @@ from src.models.schemas import DependencyInfo, ProjectStructureFinding
 from src.utils.helpers import list_top_level_modules
 
 
+def _canonical_stack_name(name: str) -> str:
+    normalized = name.strip().lower()
+    canonical_map = {
+        "python": "Python",
+        "node": "Node.js",
+        "node.js": "Node.js",
+        "java": "Java",
+        "go": "Go",
+        "dotnet": ".NET",
+        ".net": ".NET",
+        "docker": "Docker",
+        "github-actions": "GitHub Actions",
+        "github actions": "GitHub Actions",
+        "terraform": "Terraform",
+        "kubernetes": "Kubernetes",
+        "streamlit": "Streamlit",
+        "django": "Django",
+        "flask": "Flask",
+        "fastapi": "FastAPI",
+    }
+    return canonical_map.get(normalized, name.strip())
+
+
 def detect_tech_stack(file_paths: Sequence[str], metadata_language: str | None = None) -> List[str]:
     stack = set()
     lower_paths = [p.lower() for p in file_paths]
@@ -17,53 +40,58 @@ def detect_tech_stack(file_paths: Sequence[str], metadata_language: str | None =
     path_suffixes = [Path(p).suffix.lower() for p in file_paths]
 
     if metadata_language:
-        stack.add(metadata_language)
+        stack.add(_canonical_stack_name(metadata_language))
 
     if any(suffix == ".py" for suffix in path_suffixes) or any(
         name in {"requirements.txt", "pyproject.toml", "pipfile"} for name in file_names
     ):
-        stack.add("python")
+        stack.add("Python")
 
     if any(suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} for suffix in path_suffixes) or any(
         name in {"yarn.lock", "pnpm-lock.yaml"} for name in file_names
     ):
-        stack.add("node.js")
+        stack.add("Node.js")
     if "package.json" in file_names:
-        stack.add("node.js")
+        stack.add("Node.js")
 
     if any(suffix == ".java" for suffix in path_suffixes) or any(
         name in {"pom.xml", "build.gradle"} for name in file_names
     ):
-        stack.add("java")
+        stack.add("Java")
 
     if any(suffix == ".go" for suffix in path_suffixes) or "go.mod" in file_names:
-        stack.add("go")
+        stack.add("Go")
 
     if any(suffix in {".csproj", ".sln", ".cs"} for suffix in path_suffixes):
-        stack.add("dotnet")
+        stack.add(".NET")
 
     if any(name in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for name in file_names):
-        stack.add("docker")
+        stack.add("Docker")
 
     if any(".github/workflows/" in path for path in lower_paths):
-        stack.add("github-actions")
+        stack.add("GitHub Actions")
 
     if any(suffix == ".tf" for suffix in path_suffixes) or any("terraform" in path for path in lower_paths):
-        stack.add("terraform")
+        stack.add("Terraform")
 
     if any("k8s" in path or "helm" in path for path in lower_paths) or "chart.yaml" in file_names:
-        stack.add("kubernetes")
+        stack.add("Kubernetes")
 
     if any("streamlit" in p for p in lower_paths):
-        stack.add("streamlit")
+        stack.add("Streamlit")
     if any("django" in p for p in lower_paths):
-        stack.add("django")
+        stack.add("Django")
     if any("flask" in p for p in lower_paths):
-        stack.add("flask")
+        stack.add("Flask")
     if any("fastapi" in p for p in lower_paths):
-        stack.add("fastapi")
+        stack.add("FastAPI")
 
-    return sorted(stack)
+    deduped: dict[str, str] = {}
+    for item in stack:
+        canonical = _canonical_stack_name(item)
+        deduped[canonical.lower()] = canonical
+
+    return sorted(deduped.values())
 
 
 def parse_dependencies(file_contents: Dict[str, str]) -> List[DependencyInfo]:
