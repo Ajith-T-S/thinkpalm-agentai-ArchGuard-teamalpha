@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -34,6 +34,7 @@ class RepositoryAnalysisAgent:
         self.github_tools = build_github_tools(github_service)
         self.llm = llm
         self.max_files_to_analyze = int(os.getenv("MAX_FILES_TO_ANALYZE", "120"))
+        self.max_files_for_drift = int(os.getenv("MAX_FILES_FOR_DRIFT", "5000"))
         self.max_file_bytes = int(os.getenv("MAX_FILE_BYTES", "120000"))
         self.max_react_iterations = int(os.getenv("MAX_REACT_ITERATIONS", "8"))
         self.target_file_reads = int(os.getenv("TARGET_FILE_READS", "12"))
@@ -76,6 +77,7 @@ class RepositoryAnalysisAgent:
         self,
         owner: str,
         repo: str,
+        branch: Optional[str] = None,
         progress_callback: Callable[[str, str, str], None] | None = None,
     ) -> Tuple[RepoMetadata, str, List[Dict[str, Any]], List[str], Dict[str, str], List[ReActStep], ReActSummary]:
         fetch_tool = self.github_tools[0]
@@ -83,7 +85,7 @@ class RepositoryAnalysisAgent:
         read_tool = self.github_tools[2]
 
         metadata: RepoMetadata | None = None
-        branch = "main"
+        selected_branch = branch
         files_payload: List[Dict[str, Any]] = []
         prioritized_paths: List[str] = []
         file_contents: Dict[str, str] = {}
@@ -106,8 +108,11 @@ class RepositoryAnalysisAgent:
                     action_input = {"owner": owner, "repo": repo}
                     metadata_payload = fetch_tool.invoke(action_input)
                     metadata = RepoMetadata(**metadata_payload)
-                    branch = metadata.default_branch
-                    observation = f"Fetched metadata. default_branch={branch}, language={metadata.language}, stars={metadata.stars}"
+                    selected_branch = selected_branch or metadata.default_branch
+                    observation = (
+                        f"Fetched metadata. default_branch={metadata.default_branch}, "
+                        f"analyzing_branch={selected_branch}, language={metadata.language}, stars={metadata.stars}"
+                    )
                     if progress_callback:
                         progress_callback("Fetching repo", "completed", observation)
                 elif not files_payload:
@@ -116,8 +121,8 @@ class RepositoryAnalysisAgent:
                     action_input = {
                         "owner": owner,
                         "repo": repo,
-                        "branch": branch,
-                        "max_files": self.max_files_to_analyze,
+                        "branch": selected_branch,
+                        "max_files": self.max_files_for_drift,
                         "max_file_bytes": self.max_file_bytes,
                     }
                     files_payload = list_tool.invoke(action_input)
@@ -152,7 +157,7 @@ class RepositoryAnalysisAgent:
                     next_path = unread_paths[0]
                     thought = "Need file-level evidence from high-priority configuration or entrypoint files."
                     action = "read_repo_file_tool"
-                    action_input = {"owner": owner, "repo": repo, "path": next_path, "branch": branch}
+                    action_input = {"owner": owner, "repo": repo, "path": next_path, "branch": selected_branch}
                     content = read_tool.invoke(action_input)
                     if content:
                         file_contents[next_path] = content[:20000]
@@ -227,12 +232,13 @@ class RepositoryAnalysisAgent:
             stop_condition=stop_condition,  # type: ignore[arg-type]
             fallback_used=stop_condition != "enough_evidence",
         )
-        return metadata, branch, files_payload, prioritized_paths, file_contents, trace, react_summary
+        return metadata, selected_branch or "main", files_payload, prioritized_paths, file_contents, trace, react_summary
 
     def run(
         self,
         owner: str,
         repo: str,
+        branch: Optional[str] = None,
         focus: str = "general",
         report_depth: str = "deep",
         progress_callback: Callable[[str, str, str], None] | None = None,
@@ -242,6 +248,7 @@ class RepositoryAnalysisAgent:
         metadata, branch, files_payload, prioritized_paths, file_contents, trace, react_summary = self._run_react_loop(
             owner=owner,
             repo=repo,
+            branch=branch,
             progress_callback=progress_callback,
         )
 
@@ -253,6 +260,7 @@ class RepositoryAnalysisAgent:
         llm_findings = self._llm_observations(metadata, prioritized_paths, focus=focus)
 
         evidence = {
+            "inventory_files": [item["path"] for item in files_payload][: self.max_files_for_drift],
             "sampled_files": prioritized_paths[:120],
             "read_files": list(file_contents.keys()),
             "metadata": metadata.model_dump(),

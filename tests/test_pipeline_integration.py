@@ -67,18 +67,61 @@ class FakeGitHubService:
         }
         return contents.get(path, "")
 
+    def fetch_branch_head_sha(self, owner: str, repo: str, branch: str) -> str:
+        return "abc123def456"
+
+    def fetch_commit_parent_sha(self, owner: str, repo: str, commit_sha: str) -> str:
+        return "prev987654321"
+
 
 def test_pipeline_smoke_with_mocked_github(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
+    fake_github_service = FakeGitHubService()
     memory_store = MemoryStore(store_path=str(tmp_path / "memory_store.json"))
-    repo_agent = RepositoryAnalysisAgent(github_service=FakeGitHubService(), llm=FakeLLM())  # type: ignore[arg-type]
+    repo_agent = RepositoryAnalysisAgent(github_service=fake_github_service, llm=FakeLLM())  # type: ignore[arg-type]
     review_agent = ArchitectureReviewAgent(llm=FakeLLM())  # type: ignore[arg-type]
-    pipeline = ReviewPipeline(repo_agent=repo_agent, review_agent=review_agent, memory_store=memory_store)
+    pipeline = ReviewPipeline(
+        repo_agent=repo_agent,
+        review_agent=review_agent,
+        memory_store=memory_store,
+        github_service=fake_github_service,
+    )
 
     result = pipeline.run(owner="demo", repo="sample", focus="general", report_depth="deep")
 
     assert "analysis" in result
     assert "report" in result
     assert result["analysis"]["repo"]["full_name"] == "demo/sample"
+    assert result["comparison"]["repo_key"] == "demo/sample@main"
+    assert result["comparison"]["previous_exists"] is True
+    assert result["comparison"]["comparison_source"] == "parent_commit"
+    assert result["comparison"]["previous_commit_sha"] == "prev987654321"
+    assert result["comparison"]["current_commit_sha"] == "abc123def456"
     assert "reports/" in result["report"]["report_path"].replace("\\", "/")
     assert isinstance(result["history"], list)
+
+
+def test_pipeline_uses_user_baseline_commit_when_provided(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    fake_github_service = FakeGitHubService()
+    memory_store = MemoryStore(store_path=str(tmp_path / "memory_store.json"))
+    repo_agent = RepositoryAnalysisAgent(github_service=fake_github_service, llm=FakeLLM())  # type: ignore[arg-type]
+    review_agent = ArchitectureReviewAgent(llm=FakeLLM())  # type: ignore[arg-type]
+    pipeline = ReviewPipeline(
+        repo_agent=repo_agent,
+        review_agent=review_agent,
+        memory_store=memory_store,
+        github_service=fake_github_service,
+    )
+
+    result = pipeline.run(
+        owner="demo",
+        repo="sample",
+        baseline_commit="userbase123456",
+        focus="general",
+        report_depth="deep",
+    )
+
+    assert result["comparison"]["comparison_source"] == "user_commit"
+    assert result["comparison"]["previous_commit_sha"] == "userbase123456"
+    assert result["comparison"]["current_commit_sha"] == "abc123def456"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -28,8 +30,88 @@ def render_bullets(title: str, items: list, empty_text: str = "No data available
         st.markdown(f"- {item}")
 
 
+def render_readable_table(rows: list[dict], *, width: str = "stretch") -> None:
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    df = df.rename(
+        columns={
+            "owner_role": "Owner role",
+            "due_window": "Due window",
+        }
+    )
+    df.index = range(1, len(df) + 1)
+    styled = (
+        df.style.set_table_styles(
+            [
+                {
+                    "selector": "th.col_heading",
+                    "props": [
+                        ("background-color", "#1e3a8a"),
+                        ("color", "#ffffff"),
+                        ("font-weight", "700"),
+                        ("font-size", "0.92rem"),
+                        ("text-align", "left"),
+                        ("padding", "8px 10px"),
+                        ("border", "1px solid #c7d2fe"),
+                    ],
+                },
+                {
+                    "selector": "th.row_heading",
+                    "props": [
+                        ("background-color", "#ffffff"),
+                        ("color", "#0f172a"),
+                        ("font-weight", "600"),
+                        ("font-size", "0.9rem"),
+                        ("text-align", "center"),
+                        ("padding", "7px 8px"),
+                        ("border", "1px solid #e2e8f0"),
+                    ],
+                },
+                {
+                    "selector": "th.blank",
+                    "props": [
+                        ("background-color", "#ffffff"),
+                        ("border", "1px solid #e2e8f0"),
+                    ],
+                },
+                {
+                    "selector": "td",
+                    "props": [
+                        ("font-size", "0.9rem"),
+                        ("padding", "7px 10px"),
+                        ("border", "1px solid #e2e8f0"),
+                    ],
+                },
+                {"selector": "table", "props": [("width", "100%"), ("border-collapse", "collapse")]},
+            ]
+        )
+    )
+    st.table(styled)
+
+
 def to_yes_no(value: bool) -> str:
     return "Yes" if value else "No"
+
+
+def to_local_time(iso_utc: str | None) -> str:
+    if not iso_utc:
+        return "n/a"
+    try:
+        normalized = iso_utc.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    except ValueError:
+        return iso_utc
+
+
+def localize_history_rows(rows: list[dict]) -> list[dict]:
+    localized: list[dict] = []
+    for row in rows:
+        updated = dict(row)
+        updated["analyzed_at"] = to_local_time(updated.get("analyzed_at"))
+        localized.append(updated)
+    return localized
 
 
 def compute_confidence(analysis: dict, report: dict) -> int:
@@ -51,6 +133,195 @@ def compute_confidence(analysis: dict, report: dict) -> int:
     if len(report.get("architecture_observations", [])) < 3:
         score -= 5
     return max(0, min(99, score))
+
+
+def _pdf_escape(value: object) -> str:
+    text = str(value) if value is not None else ""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _pdf_bullets(story: list, styles, heading: str, items: list[str], empty_text: str) -> None:
+    from reportlab.platypus import Paragraph, Spacer
+
+    story.append(Paragraph(_pdf_escape(heading), styles["Heading3"]))
+    if items:
+        for item in items:
+            story.append(Paragraph(f"• {_pdf_escape(item)}", styles["BodyText"]))
+    else:
+        story.append(Paragraph(_pdf_escape(empty_text), styles["BodyText"]))
+    story.append(Spacer(1, 8))
+
+
+def build_readable_pdf_bytes(
+    report: dict,
+    analysis: dict,
+    comparison: dict,
+    history: list[dict],
+) -> bytes | None:
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except ImportError:
+        return None
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    styles["BodyText"].spaceAfter = 5
+
+    story: list = [
+        Paragraph(f"Architecture Report: {_pdf_escape(report.get('repo_full_name', 'n/a'))}", styles["Title"]),
+        Spacer(1, 8),
+        Paragraph(f"Generated: {_pdf_escape(to_local_time(report.get('generated_at')))}", styles["BodyText"]),
+        Paragraph(f"Focus: {_pdf_escape(report.get('focus', 'general'))}", styles["BodyText"]),
+        Spacer(1, 10),
+        Paragraph("Executive Summary", styles["Heading2"]),
+        Paragraph(_pdf_escape(report.get("summary", "No summary available.")), styles["BodyText"]),
+        Spacer(1, 8),
+    ]
+
+    analytics_table = Table(
+        [
+            ["Files scanned", "Dependencies", "Risks", "Recommendations", "Drift status"],
+            [
+                str(len(analysis.get("evidence", {}).get("sampled_files", []))),
+                str(sum(len(dep.get("dependencies", [])) for dep in analysis.get("dependencies", []))),
+                str(len(report.get("risks_and_antipatterns", []))),
+                str(len(report.get("recommendations", []))),
+                str(comparison.get("drift_status", "n/a")),
+            ],
+        ],
+        colWidths=[90, 90, 70, 120, 90],
+    )
+    analytics_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ]
+        )
+    )
+    story.extend([analytics_table, Spacer(1, 12)])
+
+    _pdf_bullets(story, styles, "Detected Stack", report.get("detected_stack", []), "No stack markers detected.")
+    _pdf_bullets(story, styles, "Modules", report.get("module_breakdown", []), "No modules identified.")
+    _pdf_bullets(
+        story,
+        styles,
+        "Architecture Observations",
+        report.get("architecture_observations", []),
+        "No observations generated.",
+    )
+    _pdf_bullets(
+        story,
+        styles,
+        "Risks / Anti-patterns",
+        report.get("risks_and_antipatterns", []),
+        "No significant risks detected.",
+    )
+    _pdf_bullets(
+        story,
+        styles,
+        "Recommendations",
+        report.get("recommendations", []),
+        "No recommendations generated.",
+    )
+    _pdf_bullets(story, styles, "Next Steps", report.get("next_steps", []), "No next steps generated.")
+
+    action_plan = report.get("action_plan", [])
+    story.append(Paragraph("Prioritized Action Plan", styles["Heading3"]))
+    if action_plan:
+        plan_cell_style = ParagraphStyle(
+            "PlanCell",
+            parent=styles["BodyText"],
+            fontSize=8,
+            leading=10,
+            spaceAfter=0,
+        )
+        plan_rows = [
+            [
+                Paragraph("Priority", plan_cell_style),
+                Paragraph("Action", plan_cell_style),
+                Paragraph("Owner", plan_cell_style),
+                Paragraph("Effort", plan_cell_style),
+                Paragraph("Impact", plan_cell_style),
+                Paragraph("Due", plan_cell_style),
+            ]
+        ]
+        for item in action_plan:
+            plan_rows.append(
+                [
+                    Paragraph(_pdf_escape(item.get("priority", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("action", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("owner_role", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("effort", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("impact", "")), plan_cell_style),
+                    Paragraph(_pdf_escape(item.get("due_window", "")), plan_cell_style),
+                ]
+            )
+        plan_table = Table(plan_rows, repeatRows=1, colWidths=[45, 210, 95, 45, 45, 55])
+        plan_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("WORDWRAP", (0, 0), (-1, -1), "CJK"),
+                ]
+            )
+        )
+        story.append(plan_table)
+    else:
+        story.append(Paragraph("No action plan generated.", styles["BodyText"]))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Architecture Drift Summary", styles["Heading3"]))
+    drift_lines = [
+        f"Baseline source: {comparison.get('comparison_source', 'memory')}",
+        f"Previous run: {to_local_time(comparison.get('previous_analyzed_at'))}",
+        f"Previous commit: {comparison.get('previous_commit_sha', 'n/a')}",
+        f"Current commit: {comparison.get('current_commit_sha', 'n/a')}",
+        f"Stack changed: {comparison.get('stack_changed', False)} | Focus changed: {comparison.get('focus_changed', False)}",
+        f"Module delta: {comparison.get('module_delta', 0)} | Dependency delta: {comparison.get('dependency_delta', 0)}",
+    ]
+    for line in drift_lines:
+        story.append(Paragraph(_pdf_escape(line), styles["BodyText"]))
+    story.append(Spacer(1, 8))
+
+    history_rows = history[:12]
+    story.append(Paragraph("Run History", styles["Heading3"]))
+    if history_rows:
+        rows = [["Run Time", "Focus", "Risk Count", "Module Count", "Dependency Count"]]
+        for row in history_rows:
+            rows.append(
+                [
+                    to_local_time(row.get("analyzed_at")),
+                    str(row.get("focus", "")),
+                    str(row.get("risk_count", 0)),
+                    str(row.get("module_count", 0)),
+                    str(row.get("dependency_count", 0)),
+                ]
+            )
+        history_table = Table(rows, repeatRows=1)
+        history_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]
+            )
+        )
+        story.append(history_table)
+    else:
+        story.append(Paragraph("No run history available.", styles["BodyText"]))
+
+    doc.build(story)
+    return buffer.getvalue()
 
 
 st.set_page_config(page_title="AI Architecture Review Assistant", layout="wide")
@@ -130,6 +401,18 @@ st.markdown(
             box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
         }
 
+        /* Improve dataframe header readability (Action Plan and other tables) */
+        div[data-testid="stDataFrame"] [role="columnheader"] {
+            background: #1e3a8a !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            border-right: 1px solid #c7d2fe !important;
+        }
+        div[data-testid="stDataFrame"] [role="columnheader"] * {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+
         div[data-testid="stTabs"] div[role="tablist"] {
             gap: 0.08rem;
             border-bottom: 1px solid #cbd5e1;
@@ -174,6 +457,26 @@ st.markdown(
         .stAlert {
             border-radius: 10px !important;
         }
+
+        /* Improve readability of informational captions/help text */
+        .stCaption,
+        div[data-testid="stCaptionContainer"],
+        div[data-testid="stCaptionContainer"] p,
+        small {
+            color: #334155 !important;
+            font-size: 0.95rem !important;
+            line-height: 1.45 !important;
+            font-weight: 500 !important;
+        }
+
+        /* Keep captions readable on sidebar gradient background */
+        section[data-testid="stSidebar"] .stCaption,
+        section[data-testid="stSidebar"] div[data-testid="stCaptionContainer"] p,
+        section[data-testid="stSidebar"] small {
+            color: #f8fafc !important;
+            font-size: 0.9rem !important;
+            font-weight: 500 !important;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -190,7 +493,12 @@ if "last_result" not in st.session_state:
 with st.sidebar:
     st.subheader("Inputs")
     repo_input = st.text_input("GitHub repo URL or owner/repo", value="langchain-ai/langchain")
+    st.caption(
+        "Supported: `owner/repo`, `owner/repo@branch`, "
+        "`https://github.com/owner/repo`, or `.../tree/branch`."
+    )
     github_token = st.text_input("GitHub token (optional)", type="password")
+    baseline_commit = st.text_input("Baseline commit (optional)", placeholder="e.g., f922d1f")
     focus = st.selectbox("Report focus", options=["general", "security", "scalability", "maintainability"])
     report_depth = "deep"
     analyze_clicked = st.button("Analyze repository", type="primary")
@@ -210,19 +518,23 @@ if analyze_clicked:
         status_box.write(f"{icon} **{stage}** ({state}) - {details}")
 
     try:
-        owner, repo = parse_github_input(repo_input)
+        owner, repo, branch = parse_github_input(repo_input)
         token = github_token or os.getenv("GITHUB_TOKEN")
         llm = LLMService().create_chat_model()
+        github_service = GitHubService(token=token)
         pipeline = ReviewPipeline(
-            repo_agent=RepositoryAnalysisAgent(github_service=GitHubService(token=token), llm=llm),
+            repo_agent=RepositoryAnalysisAgent(github_service=github_service, llm=llm),
             review_agent=ArchitectureReviewAgent(llm=llm),
             writer_agent=ReportWriterAgent(llm=llm),
             memory_store=memory_store,
+            github_service=github_service,
         )
         with st.spinner("Analyzing repository..."):
             result = pipeline.run(
                 owner=owner,
                 repo=repo,
+                branch=branch,
+                baseline_commit=baseline_commit.strip() or None,
                 focus=focus,
                 report_depth=report_depth,
                 progress_callback=on_progress,
@@ -288,18 +600,6 @@ if result:
         risks = report.get("risks_and_antipatterns", [])
         render_bullets("Risk Findings", risks, "No significant risks detected.")
 
-        evidence_snippets = analysis.get("evidence", {}).get("evidence_snippets", [])
-        if observations or risks:
-            st.markdown("**Per-finding supporting evidence**")
-            findings_for_evidence = (observations + risks)[:8]
-            for finding in findings_for_evidence:
-                with st.expander(finding):
-                    if evidence_snippets:
-                        for item in evidence_snippets[:4]:
-                            st.markdown(f"- `{item.get('path', 'unknown')}`")
-                            st.code(item.get("snippet", "No snippet available."))
-                    else:
-                        st.caption("No evidence snippets available for this run.")
     with tabs[3]:
         st.subheader("Recommendations")
         render_bullets("Recommended Actions", report.get("recommendations", []), "No recommendations available.")
@@ -309,7 +609,8 @@ if result:
         st.subheader("Prioritized Action Plan")
         action_plan = report.get("action_plan", [])
         if action_plan:
-            st.dataframe(action_plan, width="stretch")
+            render_readable_table(action_plan)
+            st.caption("Effort shorthand: `S` = Small, `M` = Medium, `L` = Large.")
         else:
             st.caption("No action plan generated for this run.")
 
@@ -372,32 +673,61 @@ if result:
             + len(architecture_changes.get("added_key_directories", []))
             + len(architecture_changes.get("removed_key_directories", []))
         )
-        st.markdown(
-            f"**Current drift assessment:** `{comparison.get('drift_status', 'n/a')}` "
-            f"with score `{comparison.get('improvement_score', 'n/a')}/100`."
-        )
+        if not comparison.get("previous_exists", False):
+            st.info(
+                "No previous analysis for this repo in memory yet. The next run will compare against this one."
+            )
+        else:
+            st.markdown(
+                f"**Current drift assessment (vs previous run):** `{comparison.get('drift_status', 'n/a')}`"
+            )
+            st.caption(
+                "Label is derived from risk and structure deltas vs the last saved run. "
+                "Risk text and sampled files can differ between runs even when the repo is unchanged, so use the tables below as the source of truth."
+            )
 
+        file_change_basis = file_changes.get("basis", "sampled_files")
+        added_label = "Repo Files Added" if file_change_basis == "repository_inventory" else "Newly Sampled Files"
+        removed_label = "Repo Files Removed" if file_change_basis == "repository_inventory" else "No Longer Sampled Files"
         summary_rows = [
             {
-                "Previous Run": comparison.get("previous_analyzed_at", "n/a"),
+                "Previous Run": to_local_time(comparison.get("previous_analyzed_at")),
+                "Branch": comparison.get("branch", "n/a"),
+                "Previous Commit": comparison.get("previous_commit_sha", "n/a"),
+                "Current Commit": comparison.get("current_commit_sha", "n/a"),
                 "Drift Status": comparison.get("drift_status", "n/a"),
-                "Improvement Score": comparison.get("improvement_score", "n/a"),
                 "Focus Changed": to_yes_no(comparison.get("focus_changed", False)),
                 "Stack Changed": to_yes_no(comparison.get("stack_changed", False)),
-                "Files Added": file_changes.get("added_count", 0),
-                "Files Removed": file_changes.get("removed_count", 0),
+                added_label: file_changes.get("added_count", 0),
+                removed_label: file_changes.get("removed_count", 0),
                 "Architecture Changes": architecture_change_count,
                 "Module Delta": comparison.get("module_delta", 0),
                 "Dependency Delta": comparison.get("dependency_delta", 0),
             }
         ]
         st.markdown("**Drift Summary**")
-        st.dataframe(summary_rows, width="stretch")
+        render_readable_table(summary_rows)
+        if comparison.get("comparison_source") == "parent_commit":
+            st.caption("Baseline for this run is inferred from the parent commit on GitHub (HEAD~1).")
+        elif comparison.get("comparison_source") == "user_commit":
+            st.caption("Baseline for this run is the user-provided commit SHA.")
+        if comparison.get("same_commit"):
+            st.caption("Current and previous runs point to the same commit SHA; drift deltas may reflect non-code sampling noise.")
+        if file_change_basis == "repository_inventory":
+            st.caption(
+                "File add/remove counts are based on repository inventory snapshots between runs."
+            )
+        else:
+            st.caption(
+                "File counts reflect analysis sampling coverage changes between runs, "
+                "not actual repository file creation/deletion."
+            )
 
         st.markdown("**Drift Timeline (Run History)**")
         if history and len(history) > 1:
             timeline_df = pd.DataFrame(history)
             timeline_df = timeline_df.sort_values("analyzed_at")
+            timeline_df["analyzed_at"] = timeline_df["analyzed_at"].apply(to_local_time)
             timeline_chart = timeline_df.set_index("analyzed_at")[["risk_count", "module_count", "dependency_count"]]
             st.line_chart(timeline_chart, height=220)
             st.caption("Trend across recent runs for this repository.")
@@ -425,12 +755,15 @@ if result:
         else:
             st.caption("No architecture-level structural changes between runs.")
 
-        st.markdown("**Sampled File Changes**")
+        detail_header = "Repository File Changes (sample)" if file_change_basis == "repository_inventory" else "Sampled File Changes"
+        st.markdown(f"**{detail_header}**")
         file_rows = []
         for item in file_changes.get("added_samples", []):
-            file_rows.append({"Change Type": "Added File", "Path": item})
+            change_type = "Added Repo File" if file_change_basis == "repository_inventory" else "Newly Sampled File"
+            file_rows.append({"Change Type": change_type, "Path": item})
         for item in file_changes.get("removed_samples", []):
-            file_rows.append({"Change Type": "Removed File", "Path": item})
+            change_type = "Removed Repo File" if file_change_basis == "repository_inventory" else "No Longer Sampled File"
+            file_rows.append({"Change Type": change_type, "Path": item})
         if file_rows:
             st.dataframe(file_rows, width="stretch")
         else:
@@ -460,6 +793,10 @@ if result:
     with tabs[8]:
         st.subheader("Reports")
         st.markdown(f"**Saved report path:** `{report.get('report_path')}`")
+        current_repo_key = comparison.get("repo_key", report.get("repo_full_name"))
+        repo_history = memory_store.get_run_history(limit=10, repo_key=current_repo_key)
+        all_history = memory_store.get_run_history(limit=20)
+
         st.download_button(
             label="Download markdown report",
             data=report["markdown_report"],
@@ -472,24 +809,30 @@ if result:
             file_name=f"{report['repo_full_name'].replace('/', '_')}_analysis_result.json",
             mime="application/json",
         )
+        pdf_bytes = build_readable_pdf_bytes(report=report, analysis=analysis, comparison=comparison, history=repo_history)
+        if pdf_bytes:
+            st.download_button(
+                label="Download PDF report",
+                data=pdf_bytes,
+                file_name=f"{report['repo_full_name'].replace('/', '_')}_architecture_report.pdf",
+                mime="application/pdf",
+            )
+        else:
+            st.caption("Install `reportlab` to enable PDF export.")
 
         with st.expander("Preview full markdown report"):
             st.markdown(report["markdown_report"])
 
         st.markdown("**Run history (from memory store)**")
-        current_repo_key = report.get("repo_full_name")
-        repo_history = memory_store.get_run_history(limit=10, repo_key=current_repo_key)
-        all_history = memory_store.get_run_history(limit=20)
-
         st.markdown("Current repository history")
         if repo_history:
-            st.dataframe(repo_history, width="stretch")
+            st.dataframe(localize_history_rows(repo_history), width="stretch")
         else:
             st.caption("No previous runs found for this repository.")
 
         with st.expander("Recent runs across repositories"):
             if all_history:
-                st.dataframe(all_history, width="stretch")
+                st.dataframe(localize_history_rows(all_history), width="stretch")
             else:
                 st.caption("No run history available yet.")
 else:

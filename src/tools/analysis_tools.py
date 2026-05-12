@@ -10,39 +10,88 @@ from src.models.schemas import DependencyInfo, ProjectStructureFinding
 from src.utils.helpers import list_top_level_modules
 
 
+def _canonical_stack_name(name: str) -> str:
+    normalized = name.strip().lower()
+    canonical_map = {
+        "python": "Python",
+        "node": "Node.js",
+        "node.js": "Node.js",
+        "java": "Java",
+        "go": "Go",
+        "dotnet": ".NET",
+        ".net": ".NET",
+        "docker": "Docker",
+        "github-actions": "GitHub Actions",
+        "github actions": "GitHub Actions",
+        "terraform": "Terraform",
+        "kubernetes": "Kubernetes",
+        "streamlit": "Streamlit",
+        "django": "Django",
+        "flask": "Flask",
+        "fastapi": "FastAPI",
+    }
+    return canonical_map.get(normalized, name.strip())
+
+
 def detect_tech_stack(file_paths: Sequence[str], metadata_language: str | None = None) -> List[str]:
     stack = set()
     lower_paths = [p.lower() for p in file_paths]
+    file_names = [Path(p).name.lower() for p in file_paths]
+    path_suffixes = [Path(p).suffix.lower() for p in file_paths]
 
     if metadata_language:
-        stack.add(metadata_language)
+        stack.add(_canonical_stack_name(metadata_language))
 
-    indicators = {
-        "python": [".py", "requirements.txt", "pyproject.toml", "pipfile"],
-        "node.js": ["package.json", ".js", ".ts", "yarn.lock", "pnpm-lock.yaml"],
-        "java": ["pom.xml", "build.gradle", ".java"],
-        "go": ["go.mod", ".go"],
-        "dotnet": [".csproj", ".sln", ".cs"],
-        "docker": ["dockerfile", "docker-compose.yml", "docker-compose.yaml"],
-        "github-actions": [".github/workflows"],
-        "terraform": [".tf", "terraform"],
-        "kubernetes": ["k8s", "helm", "chart.yaml"],
-    }
+    if any(suffix == ".py" for suffix in path_suffixes) or any(
+        name in {"requirements.txt", "pyproject.toml", "pipfile"} for name in file_names
+    ):
+        stack.add("Python")
 
-    for tech, patterns in indicators.items():
-        if any(any(pattern in path for pattern in patterns) for path in lower_paths):
-            stack.add(tech)
+    if any(suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} for suffix in path_suffixes) or any(
+        name in {"yarn.lock", "pnpm-lock.yaml"} for name in file_names
+    ):
+        stack.add("Node.js")
+    if "package.json" in file_names:
+        stack.add("Node.js")
+
+    if any(suffix == ".java" for suffix in path_suffixes) or any(
+        name in {"pom.xml", "build.gradle"} for name in file_names
+    ):
+        stack.add("Java")
+
+    if any(suffix == ".go" for suffix in path_suffixes) or "go.mod" in file_names:
+        stack.add("Go")
+
+    if any(suffix in {".csproj", ".sln", ".cs"} for suffix in path_suffixes):
+        stack.add(".NET")
+
+    if any(name in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for name in file_names):
+        stack.add("Docker")
+
+    if any(".github/workflows/" in path for path in lower_paths):
+        stack.add("GitHub Actions")
+
+    if any(suffix == ".tf" for suffix in path_suffixes) or any("terraform" in path for path in lower_paths):
+        stack.add("Terraform")
+
+    if any("k8s" in path or "helm" in path for path in lower_paths) or "chart.yaml" in file_names:
+        stack.add("Kubernetes")
 
     if any("streamlit" in p for p in lower_paths):
-        stack.add("streamlit")
+        stack.add("Streamlit")
     if any("django" in p for p in lower_paths):
-        stack.add("django")
+        stack.add("Django")
     if any("flask" in p for p in lower_paths):
-        stack.add("flask")
+        stack.add("Flask")
     if any("fastapi" in p for p in lower_paths):
-        stack.add("fastapi")
+        stack.add("FastAPI")
 
-    return sorted(stack)
+    deduped: dict[str, str] = {}
+    for item in stack:
+        canonical = _canonical_stack_name(item)
+        deduped[canonical.lower()] = canonical
+
+    return sorted(deduped.values())
 
 
 def parse_dependencies(file_contents: Dict[str, str]) -> List[DependencyInfo]:
@@ -177,6 +226,14 @@ def detect_risks(
     risks = []
     lower_paths = [p.lower() for p in paths]
     has_tests = any(p.startswith("tests/") or "/tests/" in p for p in lower_paths)
+    python_deps = [dep for dep in dependencies if dep.ecosystem == "python"]
+    has_env_files = any(Path(p).name.lower() in {".env", ".env.example"} for p in paths)
+    has_python_sources = any(Path(p).suffix.lower() == ".py" for p in paths)
+    has_api_integration = any("github" in p or "openai" in p for p in lower_paths) or any(
+        dep.ecosystem in {"python", "node"}
+        and any("openai" in item.lower() or "github" in item.lower() for item in dep.dependencies)
+        for dep in dependencies
+    )
 
     if not has_tests:
         risks.append("Test directory is missing or sparse; regression risk may be high.")
@@ -184,8 +241,46 @@ def detect_risks(
         risks.append("No CI workflow detected; code quality checks may be inconsistent.")
     if not any("dockerfile" in p for p in lower_paths):
         risks.append("No Dockerfile found; environment parity across machines may be weaker.")
+    if has_python_sources and python_deps:
+        has_unpinned_python_ranges = any(
+            ">=" in item or "~=" in item or ">" in item
+            for dep in python_deps
+            for item in dep.dependencies
+        )
+        if has_unpinned_python_ranges:
+            risks.append(
+                "No strict Python dependency lock detected; requirements ranges can cause cross-environment version drift."
+            )
+    if has_env_files and not any(
+        marker in p
+        for p in lower_paths
+        for marker in ("secrets", "vault", "sops", "doppler", "keyvault", "secret_manager")
+    ):
+        risks.append(
+            "Secrets handling appears to rely on .env files; local/dev/prod secret management boundaries may be unclear."
+        )
+    if not any(
+        marker in p
+        for p in lower_paths
+        for marker in ("dependabot", "pip-audit", "safety", "bandit", "semgrep", "trivy", "snyk")
+    ):
+        risks.append(
+            "No explicit dependency/security scanning configuration detected; vulnerable packages may go unnoticed."
+        )
+    if any("memory_store.json" in p for p in lower_paths):
+        risks.append(
+            "JSON file-based memory store is suitable for prototyping but can become a scalability/concurrency bottleneck."
+        )
+    if has_api_integration and not any("retry" in p or "backoff" in p for p in lower_paths):
+        risks.append(
+            "API integration is present, but explicit retry/backoff patterns are not evident; rate-limit failures may impact large analyses."
+        )
     if len(paths) > 2500:
         risks.append("Large repository size may hide architectural drift and ownership complexity.")
+    if len(paths) >= 80:
+        risks.append(
+            "Analysis evidence is sample-based and may miss file-level nuances; per-file scoring/coverage depth is limited."
+        )
     if not dependencies:
         risks.append("Dependency manifests were not parsed; stack governance visibility is limited.")
 

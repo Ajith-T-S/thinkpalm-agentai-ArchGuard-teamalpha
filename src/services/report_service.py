@@ -14,6 +14,24 @@ from src.models.schemas import ArchitectureReport, MemoryRecord, RepoAnalysisRes
 from src.tools.memory_tools import compare_with_previous
 
 
+def _has_meaningful_node_usage(analysis: RepoAnalysisResult) -> bool:
+    sampled_files = [str(p).lower() for p in analysis.evidence.get("sampled_files", [])]
+    node_source_exts = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+    has_node_sources = any(path.endswith(node_source_exts) for path in sampled_files)
+    has_package_json = any(path.endswith("package.json") for path in sampled_files)
+    has_node_dependencies = any(
+        dep.ecosystem == "node" and any(item.strip() for item in dep.dependencies)
+        for dep in analysis.dependencies
+    )
+    return has_node_sources or has_package_json or has_node_dependencies
+
+
+def _should_add_node_artifact_note(analysis: RepoAnalysisResult) -> bool:
+    sampled_files = [str(p).lower() for p in analysis.evidence.get("sampled_files", [])]
+    has_lock = any(path.endswith("package-lock.json") for path in sampled_files)
+    return has_lock and not _has_meaningful_node_usage(analysis)
+
+
 def build_markdown_report(
     analysis: RepoAnalysisResult,
     project_overview: str,
@@ -28,7 +46,7 @@ def build_markdown_report(
         "",
         f"- Generated at: {datetime.utcnow().isoformat()}Z",
         f"- Focus: {analysis.focus}",
-        f"- Default branch: {analysis.repo.branch}",
+        f"- Analyzed branch: {analysis.repo.branch}",
         "",
         "## Project Overview",
         project_overview,
@@ -36,6 +54,8 @@ def build_markdown_report(
         "## Detected Stack",
     ]
     lines.extend([f"- {item}" for item in analysis.tech_stack] or ["- No stack markers detected"])
+    if _should_add_node_artifact_note(analysis):
+        lines.append("- Node.js/package-lock detected, but no meaningful Node dependency usage found.")
 
     lines.append("")
     lines.append("## Module Breakdown")
@@ -214,16 +234,20 @@ class ReviewPipeline:
         review_agent: ArchitectureReviewAgent,
         memory_store: MemoryStore,
         writer_agent: Optional[ReportWriterAgent] = None,
+        github_service: Optional[object] = None,
     ) -> None:
         self.repo_agent = repo_agent
         self.review_agent = review_agent
         self.writer_agent = writer_agent
         self.memory_store = memory_store
+        self.github_service = github_service
 
     def run(
         self,
         owner: str,
         repo: str,
+        branch: Optional[str] = None,
+        baseline_commit: Optional[str] = None,
         focus: ReportFocus = "general",
         report_depth: str = "deep",
         user_key: str = "default_user",
@@ -235,6 +259,7 @@ class ReviewPipeline:
         analysis = self.repo_agent.run(
             owner=owner,
             repo=repo,
+            branch=branch,
             focus=focus,
             report_depth=report_depth,
             progress_callback=progress_callback,
@@ -246,8 +271,19 @@ class ReviewPipeline:
             progress_callback=progress_callback,
         )
 
+        resolved_branch = analysis.repo.branch or "main"
+        repo_key = f"{owner}/{repo}@{resolved_branch}"
+        commit_sha = ""
+        if self.github_service and hasattr(self.github_service, "fetch_branch_head_sha"):
+            try:
+                commit_sha = self.github_service.fetch_branch_head_sha(owner=owner, repo=repo, branch=resolved_branch)
+            except Exception:
+                commit_sha = ""
+
         memory_record = MemoryRecord(
-            repo_key=f"{owner}/{repo}",
+            repo_key=repo_key,
+            branch=resolved_branch,
+            commit_sha=commit_sha,
             summary=report.summary,
             tech_stack=report.detected_stack,
             risks=report.risks_and_antipatterns,
@@ -264,6 +300,7 @@ class ReviewPipeline:
             ),
             entry_points_count=len(analysis.structure.entry_points),
             config_files_count=len(analysis.structure.config_files),
+            inventory_file_paths=analysis.evidence.get("inventory_files", [])[:5000],
             sampled_file_paths=analysis.evidence.get("sampled_files", [])[:300],
             config_file_paths=analysis.structure.config_files[:120],
             entry_point_paths=analysis.structure.entry_points[:120],
@@ -285,7 +322,120 @@ class ReviewPipeline:
             architecture_patterns=memory_record.architecture_patterns,
             entry_points_count=memory_record.entry_points_count,
             config_files_count=memory_record.config_files_count,
+            branch=memory_record.branch,
+            commit_sha=memory_record.commit_sha,
+            inventory_file_paths=memory_record.inventory_file_paths,
+            sampled_file_paths=memory_record.sampled_file_paths,
+            config_file_paths=memory_record.config_file_paths,
+            entry_point_paths=memory_record.entry_point_paths,
+            key_directories=memory_record.key_directories,
         )
+        if baseline_commit:
+            baseline_analysis = self.repo_agent.run(
+                owner=owner,
+                repo=repo,
+                branch=baseline_commit,
+                focus=focus,
+                report_depth=report_depth,
+                progress_callback=None,
+            )
+            baseline_review = self.review_agent.run(analysis=baseline_analysis)
+            baseline_record = MemoryRecord(
+                repo_key=repo_key,
+                branch=resolved_branch,
+                commit_sha=baseline_commit,
+                summary=baseline_review.project_overview,
+                tech_stack=baseline_analysis.tech_stack,
+                risks=baseline_review.risks_and_antipatterns,
+                recommendations=baseline_review.recommendations,
+                focus=focus,
+                report_depth=report_depth,  # type: ignore[arg-type]
+                risk_count=len(baseline_review.risks_and_antipatterns),
+                module_count=len(baseline_analysis.structure.modules),
+                dependency_count=sum(len(dep.dependencies) for dep in baseline_analysis.dependencies),
+                stack_signature="|".join(sorted([s.lower() for s in baseline_analysis.tech_stack])),
+                architecture_patterns=baseline_analysis.evidence.get(
+                    "heuristic_architecture_patterns",
+                    baseline_analysis.architectural_patterns,
+                ),
+                entry_points_count=len(baseline_analysis.structure.entry_points),
+                config_files_count=len(baseline_analysis.structure.config_files),
+                inventory_file_paths=baseline_analysis.evidence.get("inventory_files", [])[:5000],
+                sampled_file_paths=baseline_analysis.evidence.get("sampled_files", [])[:300],
+                config_file_paths=baseline_analysis.structure.config_files[:120],
+                entry_point_paths=baseline_analysis.structure.entry_points[:120],
+                key_directories=baseline_analysis.structure.key_directories[:60],
+            )
+            user_comparison = self.memory_store.compare_with_reference(
+                record=memory_record,
+                previous_record=baseline_record,
+                comparison_source="user_commit",
+            ).model_dump()
+            user_comparison["previous_analyzed_at"] = user_comparison.get(
+                "previous_analyzed_at"
+            ) or f"user commit {baseline_commit[:7]}"
+            comparison = user_comparison
+        if (
+            not baseline_commit
+            and not comparison.get("previous_exists")
+            and commit_sha
+            and self.github_service
+            and hasattr(self.github_service, "fetch_commit_parent_sha")
+        ):
+            try:
+                parent_sha = self.github_service.fetch_commit_parent_sha(
+                    owner=owner,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                )
+            except Exception:
+                parent_sha = ""
+
+            if parent_sha:
+                parent_analysis = self.repo_agent.run(
+                    owner=owner,
+                    repo=repo,
+                    branch=parent_sha,
+                    focus=focus,
+                    report_depth=report_depth,
+                    progress_callback=None,
+                )
+                parent_review = self.review_agent.run(analysis=parent_analysis)
+                parent_record = MemoryRecord(
+                    repo_key=repo_key,
+                    branch=resolved_branch,
+                    commit_sha=parent_sha,
+                    summary=parent_review.project_overview,
+                    tech_stack=parent_analysis.tech_stack,
+                    risks=parent_review.risks_and_antipatterns,
+                    recommendations=parent_review.recommendations,
+                    focus=focus,
+                    report_depth=report_depth,  # type: ignore[arg-type]
+                    risk_count=len(parent_review.risks_and_antipatterns),
+                    module_count=len(parent_analysis.structure.modules),
+                    dependency_count=sum(len(dep.dependencies) for dep in parent_analysis.dependencies),
+                    stack_signature="|".join(sorted([s.lower() for s in parent_analysis.tech_stack])),
+                    architecture_patterns=parent_analysis.evidence.get(
+                        "heuristic_architecture_patterns",
+                        parent_analysis.architectural_patterns,
+                    ),
+                    entry_points_count=len(parent_analysis.structure.entry_points),
+                    config_files_count=len(parent_analysis.structure.config_files),
+                    inventory_file_paths=parent_analysis.evidence.get("inventory_files", [])[:5000],
+                    sampled_file_paths=parent_analysis.evidence.get("sampled_files", [])[:300],
+                    config_file_paths=parent_analysis.structure.config_files[:120],
+                    entry_point_paths=parent_analysis.structure.entry_points[:120],
+                    key_directories=parent_analysis.structure.key_directories[:60],
+                )
+                parent_comparison = self.memory_store.compare_with_reference(
+                    record=memory_record,
+                    previous_record=parent_record,
+                    comparison_source="parent_commit",
+                ).model_dump()
+                parent_comparison["previous_analyzed_at"] = parent_comparison.get(
+                    "previous_analyzed_at"
+                ) or f"parent commit {parent_sha[:7]}"
+                comparison = parent_comparison
 
         self.memory_store.store_analysis_memory(memory_record)
         self.memory_store.save_preferences(

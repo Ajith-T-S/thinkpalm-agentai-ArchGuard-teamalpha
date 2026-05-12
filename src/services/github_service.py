@@ -105,3 +105,18 @@ class GitHubService:
         except ValueError as exc:
             raise GitHubServiceError(f"Could not decode file {path}.") from exc
         return decoded
+
+    def fetch_branch_head_sha(self, owner: str, repo: str, branch: str) -> str:
+        payload = self._request(f"/repos/{owner}/{repo}/commits/{branch}")
+        sha = payload.get("sha", "")
+        if not sha:
+            raise GitHubServiceError(f"Could not resolve commit SHA for branch '{branch}'.")
+        return sha
+
+    def fetch_commit_parent_sha(self, owner: str, repo: str, commit_sha: str) -> str:
+        payload = self._request(f"/repos/{owner}/{repo}/commits/{commit_sha}")
+        parents = payload.get("parents", [])
+        if not parents:
+            return ""
+        parent_sha = parents[0].get("sha", "")
+        return parent_sha
